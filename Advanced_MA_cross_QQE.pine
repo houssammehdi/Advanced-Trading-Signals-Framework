@@ -1,0 +1,176 @@
+//@version=4
+study("Moving Average Cross, MTF, Volume Filter, Stop Loss, QQE Signals, and Squeeze Momentum", shorttitle="Advanced_MA_cross_QQE", overlay=true)
+
+// SQZMOM_LB
+length = input(20, title="BB Length")
+mult = input(2.0,title="BB MultFactor")
+lengthKC=input(20, title="KC Length")
+multKC = input(1.5, title="KC MultFactor")
+
+useTrueRange = input(true, title="Use TrueRange (KC)")
+
+// Calculate BB
+source = close
+basis = sma(source, length)
+dev = multKC * stdev(source, length)
+upperBB = basis + dev
+lowerBB = basis - dev
+
+// Calculate KC
+ma = sma(source, lengthKC)
+range = useTrueRange ? tr : (high - low)
+rangema = sma(range, lengthKC)
+upperKC = ma + rangema * multKC
+lowerKC = ma - rangema * multKC
+
+sqzOn  = (lowerBB > lowerKC) and (upperBB < upperKC)
+sqzOff = (lowerBB < lowerKC) and (upperBB > upperKC)
+noSqz  = (sqzOn == false) and (sqzOff == false)
+
+val = linreg(source  -  avg(avg(highest(high, lengthKC), lowest(low, lengthKC)),sma(close,lengthKC)), lengthKC,0)
+
+bcolor = iff( val > 0, iff( val > nz(val[1]), color.lime, color.green), iff( val < nz(val[1]), color.red, color.maroon))
+scolor = noSqz ? color.blue : sqzOn ? color.black : color.gray 
+plot(val, color=bcolor, style=plot.style_histogram, linewidth=4)
+plot(0, color=scolor, style=plot.style_cross, linewidth=2)
+
+// Inputs
+pricetype = input(close, title="Price Source For The Moving Averages")
+useCurrentRes = input(true, title="Use Current Timeframe As Resolution?")
+resCustom = input(title="Use Different Timeframe? Then Uncheck The Box Above", type=input.string, defval="W")
+res = useCurrentRes ? timeframe.period : resCustom
+price = security(syminfo.tickerid, res, pricetype)
+
+shortperiod = input(50, title="Short Period Moving Average")
+longperiod = input(100, title="Long Period Moving Average")
+
+smoothinput = input(2, title='Moving Average Calculation: (1 = SMA), (2 = EMA), (3 = WMA), (4 = Linear), (5 = HMA)', minval=1, maxval=5)
+volFilter = input(1000, title="Volume Filter")
+
+RSI_Period = input(14, title='RSI Length')
+SF = input(5, title='RSI Smoothing')
+QQE = input(4.238, title='Fast QQE Factor')
+ThreshHold = input(10, title="Thresh-hold")
+
+// Moving Average Calculation
+hma(src, length) => 
+    wma(2 * wma(src, length / 2) - wma(src, length), round(sqrt(length)))
+
+shortSMA = sma(price, shortperiod)
+shortEMA = ema(price, shortperiod)
+shortWMA = wma(price, shortperiod)
+shortLINREG = linreg(price, shortperiod,0)
+shortHMA = hma(price, shortperiod)
+var float short = na
+if (smoothinput == 1)
+    short := shortSMA
+else if (smoothinput == 2)
+    short := shortEMA
+else if (smoothinput == 3)
+    short := shortWMA
+else if (smoothinput == 4)
+    short := shortLINREG
+else if (smoothinput == 5)
+    short := shortHMA
+
+longSMA = sma(price, longperiod)
+longEMA = ema(price, longperiod)
+longWMA = wma(price, longperiod)
+longLINREG = linreg(price, longperiod,0)
+longHMA = hma(price, longperiod)
+var float long = na
+if (smoothinput == 1)
+    long := longSMA
+else if (smoothinput == 2)
+    long := longEMA
+else if (smoothinput == 3)
+    long := longWMA
+else if (smoothinput == 4)
+    long := longLINREG
+else if (smoothinput == 5)
+    long := longHMA
+
+// Volume Filter
+volumeCondition = volume > volFilter
+
+// MA trend color
+shortcolor = short > short[1] ? color.lime : short < short[1] ? color.red : color.blue
+longcolor = long > long[1] ? color.lime : long < long[1] ? color.red : color.blue
+
+// MA output
+MA1 = plot(short, title="Short Period Moving Average", style=plot.style_linebr, linewidth=2, color=shortcolor)
+MA2 = plot(long, title="Long Period Moving Average", style=plot.style_linebr, linewidth=4, color=longcolor)
+fill(MA1, MA2, color=color.silver, transp=50)
+
+// Trend definition
+TrendingUp() => short > long and volumeCondition
+TrendingDown() => short < long and volumeCondition
+barcolor(TrendingUp() ? color.green : TrendingDown() ? color.red : color.blue)
+
+// MA cross alert
+MAcrossing = cross(short, long) and volumeCondition ? short : na
+plot(MAcrossing, style = plot.style_cross, linewidth = 4,color=color.black)
+
+// MA cross background color alert
+Uptrend() => TrendingUp() and TrendingDown()[1]
+Downtrend() => TrendingDown() and TrendingUp()[1]
+bgcolor(Uptrend() ? color.green : Downtrend() ? color.red : na,transp=50)
+
+// Buy and sell alert
+Buy = Uptrend() and close > close[1]
+Sell = Downtrend() and close < close[1]
+plotshape(Buy, color=color.black, style=shape.arrowup, text="Buy", location=location.belowbar)
+plotshape(Sell, color=color.black, style=shape.arrowdown, text="Sell", location=location.abovebar)
+
+// Stop Loss - This is a very simple example of a stop loss
+stopLossLevel = input(1, title="Stop Loss Percentage")/100
+stopLossPrice = valuewhen(Buy, close - close * stopLossLevel, 0)
+plot(stopLossPrice, color=color.red, style=plot.style_linebr)
+
+// QQE signals integration
+src = close
+Wilders_Period = RSI_Period * 2 - 1
+
+Rsi = rsi(src, RSI_Period)
+RsiMa = ema(Rsi, SF)
+AtrRsi = abs(RsiMa[1] - RsiMa)
+MaAtrRsi = ema(AtrRsi, Wilders_Period)
+dar = ema(MaAtrRsi, Wilders_Period) * QQE
+
+longband = 0.0
+shortband = 0.0
+trend = 0
+
+DeltaFastAtrRsi = dar
+RSIndex = RsiMa
+newshortband = RSIndex + DeltaFastAtrRsi
+newlongband = RSIndex - DeltaFastAtrRsi
+longband := RSIndex[1] > longband[1] and RSIndex > longband[1] ? max(longband[1], newlongband) : newlongband
+shortband := RSIndex[1] < shortband[1] and RSIndex < shortband[1] ? min(shortband[1], newshortband) : newshortband
+cross_1 = cross(longband[1], RSIndex)
+trend := cross(RSIndex, shortband[1]) ? 1 : cross_1 ? -1 : nz(trend[1], 1)
+FastAtrRsiTL = trend == 1 ? longband : shortband
+
+// Find all the QQE Crosses
+
+QQExlong = 0
+QQExlong := nz(QQExlong[1])
+QQExshort = 0
+QQExshort := nz(QQExshort[1])
+QQExlong := FastAtrRsiTL < RSIndex ? QQExlong + 1 : 0
+QQExshort := FastAtrRsiTL > RSIndex ? QQExshort + 1 : 0
+
+//Conditions
+
+qqeLong = QQExlong == 1 ? FastAtrRsiTL[1] - 50 : na
+qqeShort = QQExshort == 1 ? FastAtrRsiTL[1] - 50 : na
+
+// Plotting
+
+plotshape(qqeLong, title="QQE long", text="Long", textcolor=color.white, style=shape.labelup, location=location.belowbar, color=color.green, transp=0, size=size.tiny)
+plotshape(qqeShort, title="QQE short", text="Short", textcolor=color.white, style=shape.labeldown, location=location.abovebar, color=color.red, transp=0, size=size.tiny)
+
+// Alerts
+
+alertcondition(qqeLong, title="Long", message="Long")
+alertcondition(qqeShort, title="Short", message="Short")
